@@ -1,185 +1,117 @@
 import { useState } from "react";
-import { Home, Search, Circle, List, Menu, X, Users } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Menu } from "lucide-react";
+import SideMenu from "@/components/SideMenu";
 
 export default function Index() {
   const [problemText, setProblemText] = useState("");
   const [codeText, setCodeText] = useState("// write code here..");
-  const [outputText] = useState("");
+  const [outputText, setOutputText] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [isRunning, setIsRunning] = useState(false);
+  const [examplesOpen, setExamplesOpen] = useState(false);
+  const [aiMessages, setAiMessages] = useState<Array<{ role: "user" | "assistant"; content: string }>>(
+    [],
+  );
+  const [aiInput, setAiInput] = useState("");
+  const [isAiLoading, setIsAiLoading] = useState(false);
+
+  async function handleRun() {
+    try {
+      setIsRunning(true);
+      setOutputText("Running...\n");
+
+      const baseUrl = (import.meta as any).env?.VITE_PYTHON_BACKEND_URL || "http://localhost:8000";
+      const res = await fetch(`${baseUrl}/run`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          code: codeText,
+          stdin: "",
+          timeout_ms: 3000,
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        setOutputText(`HTTP ${res.status}\n${text}`);
+        return;
+      }
+      const data = (await res.json()) as {
+        stdout: string;
+        stderr: string;
+        exit_code: number;
+        timed_out: boolean;
+      };
+
+      const parts: string[] = [];
+      if (data.timed_out) parts.push("[Timed out]\n");
+      if (typeof data.exit_code === "number") parts.push(`[Exit code: ${data.exit_code}]\n`);
+      if (data.stdout) parts.push(data.stdout);
+      if (data.stderr) parts.push(data.stderr ? `\n${data.stderr}` : "");
+      setOutputText(parts.join("") || "");
+    } catch (e: any) {
+      setOutputText(e?.message ? String(e.message) : String(e));
+    } finally {
+      setIsRunning(false);
+    }
+  }
+
+  async function handleAiSend() {
+    const content = aiInput.trim();
+    if (!content || isAiLoading) return;
+
+    const nextMessages = [...aiMessages, { role: "user", content } as const];
+    setAiMessages(nextMessages);
+    setAiInput("");
+
+    try {
+      setIsAiLoading(true);
+      const baseUrl = (import.meta as any).env?.VITE_PYTHON_BACKEND_URL || "http://localhost:8000";
+      const controller = new AbortController();
+      const timeoutMs = 20000;
+      const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+      const res = await fetch(`${baseUrl}/ai/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          messages: nextMessages,
+        }),
+      });
+
+      window.clearTimeout(timeoutId);
+
+      if (!res.ok) {
+        const text = await res.text();
+        setAiMessages([...nextMessages, { role: "assistant", content: `HTTP ${res.status}\n${text}` }]);
+        return;
+      }
+
+      const data = (await res.json()) as { assistant: string };
+      setAiMessages([...nextMessages, { role: "assistant", content: data.assistant || "" }]);
+    } catch (e: any) {
+      const msg = e?.name === "AbortError" ? "Request timed out. Is Ollama running and the model downloaded?" : e;
+      setAiMessages([
+        ...nextMessages,
+        { role: "assistant", content: msg?.message ? String(msg.message) : String(msg) },
+      ]);
+    } finally {
+      setIsAiLoading(false);
+    }
+  }
 
   return (
     <div className="flex h-screen bg-white font-['Inter']">
-      {/* Sidebar */}
-      <aside className="w-[240px] border-r border-gray-200 bg-white flex-shrink-0 hidden lg:flex flex-col">
-        {/* Logo/Brand */}
-        <div className="px-6 py-5 border-b border-gray-200">
-          <h1 className="text-lg font-semibold text-black">INSE MVP</h1>
-        </div>
-
-        {/* Navigation */}
-        <nav className="flex-1 py-6">
-          {/* Discover Section */}
-          <div className="mb-6">
-            <h2 className="px-6 mb-3 text-sm font-medium text-black">
-              Discover
-            </h2>
-            <ul className="space-y-1">
-              <li>
-                <Link
-                  to="/"
-                  className="flex items-center gap-3 px-6 py-2 text-sm text-black hover:bg-gray-50 transition-colors"
-                >
-                  <Home className="w-5 h-5" />
-                  <span>Home</span>
-                </Link>
-              </li>
-              <li>
-                <Link
-                  to="/browse"
-                  className="flex items-center gap-3 px-6 py-2 text-sm text-black hover:bg-gray-50 transition-colors"
-                >
-                  <Search className="w-5 h-5" />
-                  <span>Browse</span>
-                </Link>
-              </li>
-              <li>
-                <Link
-                  to="/recruiter"
-                  className="flex items-center gap-3 px-6 py-2 text-sm text-black hover:bg-gray-50 transition-colors"
-                >
-                  <Users className="w-5 h-5" />
-                  <span>Recruiter</span>
-                </Link>
-              </li>
-              <li>
-                <Link
-                  to="/setting"
-                  className="flex items-center gap-3 px-6 py-2 text-sm text-black hover:bg-gray-50 transition-colors"
-                >
-                  <Circle className="w-5 h-5" />
-                  <span>Setting</span>
-                </Link>
-              </li>
-            </ul>
-          </div>
-
-          {/* Report Section */}
-          <div>
-            <h2 className="px-6 mb-3 text-sm font-medium text-black">
-              Report
-            </h2>
-            <ul className="space-y-1">
-              <li>
-                <Link
-                  to="/history"
-                  className="flex items-center gap-3 px-6 py-2 text-sm text-black hover:bg-gray-50 transition-colors"
-                >
-                  <List className="w-5 h-5" />
-                  <span>History</span>
-                </Link>
-              </li>
-            </ul>
-          </div>
-        </nav>
-      </aside>
-
-      {/* Mobile Menu Overlay */}
-      {mobileMenuOpen && (
-        <div
-          className="fixed inset-0 bg-black bg-opacity-50 z-40 lg:hidden"
-          onClick={() => setMobileMenuOpen(false)}
-        />
-      )}
-
-      {/* Mobile Sidebar */}
-      <aside
-        className={`fixed top-0 left-0 h-full w-[240px] bg-white border-r border-gray-200 z-50 transform transition-transform duration-300 lg:hidden ${
-          mobileMenuOpen ? "translate-x-0" : "-translate-x-full"
-        }`}
-      >
-        {/* Logo/Brand */}
-        <div className="px-6 py-5 border-b border-gray-200 flex items-center justify-between">
-          <h1 className="text-lg font-semibold text-black">INSE MVP</h1>
-          <button
-            onClick={() => setMobileMenuOpen(false)}
-            className="p-1 hover:bg-gray-100 rounded"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Navigation */}
-        <nav className="flex-1 py-6">
-          {/* Discover Section */}
-          <div className="mb-6">
-            <h2 className="px-6 mb-3 text-sm font-medium text-black">
-              Discover
-            </h2>
-            <ul className="space-y-1">
-              <li>
-                <Link
-                  to="/"
-                  className="flex items-center gap-3 px-6 py-2 text-sm text-black hover:bg-gray-50 transition-colors"
-                  onClick={() => setMobileMenuOpen(false)}
-                >
-                  <Home className="w-5 h-5" />
-                  <span>Home</span>
-                </Link>
-              </li>
-              <li>
-                <Link
-                  to="/browse"
-                  className="flex items-center gap-3 px-6 py-2 text-sm text-black hover:bg-gray-50 transition-colors"
-                  onClick={() => setMobileMenuOpen(false)}
-                >
-                  <Search className="w-5 h-5" />
-                  <span>Browse</span>
-                </Link>
-              </li>
-              <li>
-                <Link
-                  to="/recruiter"
-                  className="flex items-center gap-3 px-6 py-2 text-sm text-black hover:bg-gray-50 transition-colors"
-                  onClick={() => setMobileMenuOpen(false)}
-                >
-                  <Users className="w-5 h-5" />
-                  <span>Recruiter</span>
-                </Link>
-              </li>
-              <li>
-                <Link
-                  to="/setting"
-                  className="flex items-center gap-3 px-6 py-2 text-sm text-black hover:bg-gray-50 transition-colors"
-                  onClick={() => setMobileMenuOpen(false)}
-                >
-                  <Circle className="w-5 h-5" />
-                  <span>Setting</span>
-                </Link>
-              </li>
-            </ul>
-          </div>
-
-          {/* Report Section */}
-          <div>
-            <h2 className="px-6 mb-3 text-sm font-medium text-black">
-              Report
-            </h2>
-            <ul className="space-y-1">
-              <li>
-                <Link
-                  to="/history"
-                  className="flex items-center gap-3 px-6 py-2 text-sm text-black hover:bg-gray-50 transition-colors"
-                  onClick={() => setMobileMenuOpen(false)}
-                >
-                  <List className="w-5 h-5" />
-                  <span>History</span>
-                </Link>
-              </li>
-            </ul>
-          </div>
-        </nav>
-      </aside>
+      <SideMenu
+        brandTitle="INSE MVP"
+        mobileMenuOpen={mobileMenuOpen}
+        setMobileMenuOpen={setMobileMenuOpen}
+      />
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden">
@@ -225,13 +157,53 @@ export default function Index() {
                 </h2>
                 <div className="flex-1 border border-gray-300 rounded bg-white p-6">
                   <div className="space-y-4">
-                    <div className="text-base text-black">Title</div>
-                    <div className="text-base text-black">
-                      Problem statement
+                    <div>
+                      <div className="text-xs text-gray-600">Title</div>
+                      <div className="text-base text-black font-medium">
+                        Two Sum (Easy)
+                      </div>
                     </div>
-                    <div className="text-base text-black">Constraints</div>
-                    <div className="text-base text-black">
-                      Examples (toggle)
+
+                    <div>
+                      <div className="text-xs text-gray-600">Problem statement</div>
+                      <div className="text-sm text-black whitespace-pre-wrap">
+                        Given an array of integers nums and an integer target, return the indices of the two numbers such that they add up to target.
+
+                        You may assume that each input would have exactly one solution, and you may not use the same element twice.
+
+                        Return the answer in any order.
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="text-xs text-gray-600">Constraints</div>
+                      <div className="text-sm text-black whitespace-pre-wrap">
+                        2 ≤ nums.length ≤ 10^4
+                        -10^9 ≤ nums[i] ≤ 10^9
+                        -10^9 ≤ target ≤ 10^9
+                      </div>
+                    </div>
+
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => setExamplesOpen((v) => !v)}
+                        className="text-sm font-medium text-black underline underline-offset-4 hover:text-gray-700"
+                      >
+                        Examples {examplesOpen ? "(hide)" : "(show)"}
+                      </button>
+
+                      {examplesOpen ? (
+                        <div className="mt-3 text-sm text-black whitespace-pre-wrap">
+                          Example 1
+                          nums = [2, 7, 11, 15], target = 9
+                          Output: [0, 1]
+
+                          Example 2
+                          nums = [3, 2, 4], target = 6
+                          Output: [1, 2]
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -242,11 +214,42 @@ export default function Index() {
                 <h2 className="text-lg font-medium text-black mb-4">
                   AI Assistant
                 </h2>
-                <div className="flex-1 border border-gray-300 rounded bg-white p-6">
-                  <div className="space-y-4">
-                    <div className="text-base text-black">AI Chat</div>
-                    <div className="text-base text-black">Q / A history</div>
-                    <div className="text-base text-black">[ Ask AI ... ]</div>
+                <div className="flex-1 border border-gray-300 rounded bg-white p-6 flex flex-col">
+                  <div className="flex-1 overflow-auto space-y-3">
+                    {aiMessages.length === 0 ? (
+                      <div className="text-sm text-gray-600">Ask AI...</div>
+                    ) : (
+                      aiMessages.map((m, idx) => (
+                        <div key={idx} className="text-sm text-black whitespace-pre-wrap">
+                          <span className="font-semibold">{m.role === "user" ? "You" : "AI"}:</span>{" "}
+                          {m.content}
+                        </div>
+                      ))
+                    )}
+                    {isAiLoading ? <div className="text-sm text-gray-600">Thinking...</div> : null}
+                  </div>
+
+                  <div className="mt-4 flex gap-2">
+                    <input
+                      value={aiInput}
+                      onChange={(e) => setAiInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          handleAiSend();
+                        }
+                      }}
+                      className="flex-1 border border-gray-300 rounded px-3 py-2 text-sm text-black focus:outline-none focus:ring-2 focus:ring-black"
+                      placeholder="Ask AI..."
+                      disabled={isAiLoading}
+                    />
+                    <button
+                      onClick={handleAiSend}
+                      disabled={isAiLoading}
+                      className="px-4 py-2 bg-black text-white text-sm font-medium rounded hover:bg-gray-800 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      Send
+                    </button>
                   </div>
                 </div>
               </div>
@@ -259,7 +262,11 @@ export default function Index() {
                   Code editor / TERMINAL
                 </h2>
                 <div className="flex gap-2">
-                  <button className="px-4 lg:px-6 py-2 bg-black text-white text-sm font-medium rounded hover:bg-gray-800 transition-colors">
+                  <button
+                    onClick={handleRun}
+                    disabled={isRunning}
+                    className="px-4 lg:px-6 py-2 bg-black text-white text-sm font-medium rounded hover:bg-gray-800 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
                     RUN
                   </button>
                   <button className="px-4 lg:px-6 py-2 border border-gray-300 text-black text-sm font-medium rounded hover:bg-gray-50 transition-colors">
