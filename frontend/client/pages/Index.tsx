@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Menu } from "lucide-react";
 import SideMenu from "@/components/SideMenu";
 
+
 export default function Index() {
   const [problemText, setProblemText] = useState("");
-  const [codeText, setCodeText] = useState("// write code here..");
+  const [codeText, setCodeText] = useState("");
   const [outputText, setOutputText] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
@@ -14,6 +15,21 @@ export default function Index() {
   );
   const [aiInput, setAiInput] = useState("");
   const [isAiLoading, setIsAiLoading] = useState(false);
+  const [isSubmitted, setIsSubmitted] = useState(false);
+  const [now, setNow] = useState(new Date());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNow(new Date());
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const hh = now.getHours().toString().padStart(2, "0");
+  const mm = now.getMinutes().toString().padStart(2, "0");
+  const ss = now.getSeconds().toString().padStart(2, "0");
+
 
   async function handleRun() {
     try {
@@ -105,8 +121,23 @@ export default function Index() {
     }
   }
 
+if (isSubmitted) {
   return (
-    <div className="flex h-screen bg-white font-['Inter']">
+    <div className="flex h-screen items-center justify-center bg-white font-['Inter']">
+      <div className="text-center space-y-4">
+        <h1 className="text-2xl font-semibold text-black">
+          Your answer is submitted
+        </h1>
+        <p className="text-gray-600">
+          Thank you for your submission.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+return (
+  <div className="flex h-screen bg-white font-['Inter']">
       <SideMenu
         brandTitle="INSE MVP"
         mobileMenuOpen={mobileMenuOpen}
@@ -130,7 +161,7 @@ export default function Index() {
           </div>
           <div className="flex items-center gap-2 lg:gap-4">
             <div className="px-2 lg:px-4 py-1.5 lg:py-2 border border-gray-300 rounded text-xs lg:text-sm text-black">
-              Time 42:13
+              Time {hh}:{mm}:{ss}
             </div>
             <div className="hidden sm:flex items-center gap-2">
               <img
@@ -254,51 +285,65 @@ export default function Index() {
                 </div>
               </div>
             </div>
+{/* Code Editor + Console (Coding test style) */}
+<div className="border border-gray-300 rounded bg-white overflow-hidden">
+  {/* Top bar */}
+  <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50">
+    <div className="flex items-center gap-3">
+      <div className="text-sm font-medium text-black">Code Editor</div>
+      <div className="text-xs text-gray-600 border border-gray-300 rounded px-2 py-1 bg-white">
+        Python
+      </div>
+      <div className="text-xs text-gray-600">main.py</div>
+    </div>
 
-            {/* Code Editor Section */}
-            <div className="flex flex-col">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
-                <h2 className="text-base lg:text-lg font-medium text-black">
-                  Code editor / TERMINAL
-                </h2>
-                <div className="flex gap-2">
-                  <button
-                    onClick={handleRun}
-                    disabled={isRunning}
-                    className="px-4 lg:px-6 py-2 bg-black text-white text-sm font-medium rounded hover:bg-gray-800 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                  >
-                    RUN
-                  </button>
-                  <button className="px-4 lg:px-6 py-2 border border-gray-300 text-black text-sm font-medium rounded hover:bg-gray-50 transition-colors">
-                    Run Test
-                  </button>
-                </div>
-              </div>
-              <textarea
-                value={codeText}
-                onChange={(e) => setCodeText(e.target.value)}
-                className="w-full h-64 border border-gray-300 rounded bg-gray-50 p-4 font-mono text-sm text-black resize-none focus:outline-none focus:ring-2 focus:ring-black"
-                placeholder="// write code here.."
-              />
-            </div>
+    <div className="flex gap-2">
+      <button
+        onClick={handleRun}
+        disabled={isRunning}
+        className="px-4 py-2 bg-black text-white text-sm font-medium rounded hover:bg-gray-800 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+      >
+        {isRunning ? "Running..." : "Run"}
+      </button>
+      <button
+        type="button"
+        className="px-4 py-2 border border-gray-300 text-black text-sm font-medium rounded hover:bg-gray-100 transition-colors"
+      >
+        Run Tests
+      </button>
+    </div>
+  </div>
 
-            {/* Output Section */}
-            <div className="flex flex-col">
-              <h2 className="text-base font-medium text-black mb-4">
-                Output / Error logs
-              </h2>
-              <div className="w-full min-h-[120px] border border-gray-300 rounded bg-gray-50 p-4 font-mono text-sm text-black">
-                {outputText || ""}
-              </div>
-            </div>
-          </div>
+  {/* Editor */}
+  <div className="bg-slate-900">
+    <textarea
+      value={codeText}
+      onChange={(e) => setCodeText(e.target.value)}
+      className="w-full h-72 bg-transparent p-4 font-mono text-sm text-white resize-none focus:outline-none"
+      placeholder="// write code here.."
+      spellCheck={false}
+    />
+  </div>
+
+      {/* Console */}
+      <div className="border-t border-gray-200 bg-white">
+        <div className="flex items-center gap-4 px-4 py-2 border-b border-gray-200 bg-gray-50">
+          <div className="text-sm font-medium text-black">Console</div>
+          <div className="text-xs text-gray-600">Output / Error logs</div>
         </div>
+        <div className="w-full min-h-[140px] max-h-[220px] overflow-auto bg-slate-900 p-4 font-mono text-sm text-slate-100 whitespace-pre-wrap">
+          {outputText || ""}
+        </div>
+      </div>
+    </div> 
+  </div> 
+</div>   
 
         <footer className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 lg:px-6 py-4 border-t border-gray-200 bg-gray-50 flex-shrink-0">
           <button
             type="button"
-            disabled
-            className="w-full sm:w-auto px-4 lg:px-6 py-2 bg-gray-300 text-gray-600 text-sm font-semibold rounded cursor-not-allowed"
+            onClick={() => setIsSubmitted(true)}
+            className="w-full sm:w-auto px-4 lg:px-6 py-2 bg-black text-white text-sm font-semibold rounded hover:bg-gray-800 transition-colors"
           >
             Submit Solution
           </button>
