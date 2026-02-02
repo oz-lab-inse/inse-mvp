@@ -1,10 +1,14 @@
 import type { Candidate, IdeEvent, Metric, Report, Session, UUID } from "@shared/api";
+import { useNavigate, useParams } from "react-router-dom";
 
 export default function CandidateReport() {
-  const candidate: Candidate = {
-    candidate_id: "3333" as UUID,
-    name: "Candidate 3333",
-    email: "candidate3333@example.com",
+  const navigate = useNavigate();
+  const { candidateId } = useParams();
+  const id = (candidateId || "unknown") as UUID;
+    const candidate: Candidate = {
+    candidate_id: id,
+    name: `Candidate ${id}`,
+    email: `candidate${id}@example.com`,
   };
 
   const session: Session = {
@@ -122,9 +126,13 @@ export default function CandidateReport() {
   return (
     <div className="bg-[#FFF] min-w-screen min-h-screen">
       <div className="inline-flex pt-[17px] pr-[140px] pb-[17px] pl-[57px] items-start gap-[888px] border-b border-b-[#E0E0E0] bg-[#FFF] w-full h-16 absolute left-0 top-0 overflow-hidden">
-        <p className="text-[#000] font-inter text-xl font-semibold w-[170px] h-[30px] absolute left-[57px] top-[17px] tracking-[-0.01em]">
-          ← Back to the List
-        </p>
+        <button
+          type="button"
+          onClick={() => navigate("/recruiter")}
+          className="text-[#000] font-inter text-xl font-semibold tracking-[-0.01em]"
+        > Back to the List
+        </button>
+
         <p className="text-[#000] font-inter text-xl font-semibold w-[185px] h-[30px] absolute left-[1115px] top-[17px] tracking-[-0.01em]">
           Candidate: ID {candidate.candidate_id}
         </p>

@@ -14,6 +14,7 @@ import NotFound from "./pages/NotFound";
 import Recruiter from "./pages/Recruiter";
 import CandidateReport from "./pages/CandidateReport";
 
+
 const queryClient = new QueryClient();
 
 const App = () => (
@@ -28,8 +29,7 @@ const App = () => (
           <Route path="/setting" element={<Setting />} />
           <Route path="/history" element={<History />} />
           <Route path="/recruiter" element={<Recruiter />} />
-          <Route path="/candidate-report" element={<CandidateReport />} />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+          <Route path="/report/:candidateId" element={<CandidateReport />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>

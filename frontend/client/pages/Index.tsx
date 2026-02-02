@@ -1,40 +1,11 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { Menu } from "lucide-react";
 import SideMenu from "@/components/SideMenu";
 
-const BASE_URL = (import.meta as any).env?.VITE_PYTHON_BACKEND_URL || "http://localhost:8000";
-
-function DbStatusIndicator({ baseUrl }: { baseUrl: string }) {
-  const [status, setStatus] = useState<"checking" | "connected" | "disconnected">("checking");
-
-  useEffect(() => {
-    async function check() {
-      try {
-        const res = await fetch(`${baseUrl}/db-health`);
-        const data = await res.json();
-        setStatus(data.db_ok ? "connected" : "disconnected");
-      } catch {
-        setStatus("disconnected");
-      }
-    }
-    check();
-    const interval = setInterval(check, 10000);
-    return () => clearInterval(interval);
-  }, [baseUrl]);
-
-  if (status === "checking") return <span className="text-xs text-gray-400">DB...</span>;
-  if (status === "disconnected") return <span className="text-xs text-red-500 font-bold">DB OFF</span>;
-  return <span className="text-xs text-green-600 font-bold">DB ON</span>;
-}
 
 export default function Index() {
   const [problemText, setProblemText] = useState("");
-  const [codeText, setCodeText] = useState(
-    "class Solution:\n    def twoSum(self, nums: List[int], target: int) -> List[int]:\n        pass",
-  );
-  const [prevCode, setPrevCode] = useState(
-    "class Solution:\n    def twoSum(self, nums: List[int], target: int) -> List[int]:\n        pass",
-  );
+  const [codeText, setCodeText] = useState("");
   const [outputText, setOutputText] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
@@ -44,155 +15,39 @@ export default function Index() {
   );
   const [aiInput, setAiInput] = useState("");
   const [isAiLoading, setIsAiLoading] = useState(false);
+  const [isSubmitted, setIsSubmitted] = useState(false);
+  const [now, setNow] = useState(new Date());
 
-  // Session management
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [isSessionEnded, setIsSessionEnded] = useState(false);
-  const codeEditTimeoutRef = useRef<number | null>(null);
-
-  // Timer: 60 minutes in seconds
-  const INITIAL_TIME = 60 * 60; // 60 minutes
-  const [timeRemaining, setTimeRemaining] = useState(INITIAL_TIME);
-
-  // Helper function to log events to backend
-  const logEvent = useCallback(async (type: string, payload: object) => {
-    console.log(`[logEvent] Attempting to log: ${type}`, { sessionId });
-
-    if (!sessionId) {
-      console.warn("[logEvent] Skipped: No sessionId available yet.");
-      return;
-    }
-    try {
-      const res = await fetch(`${BASE_URL}/api/events`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: sessionId,
-          type,
-          payload,
-          ts: Date.now(),
-        }),
-      });
-      if (!res.ok) {
-        console.error(`[logEvent] Failed: ${res.status} ${res.statusText}`);
-        const text = await res.text();
-        console.error(`[logEvent] Response: ${text}`);
-      } else {
-        console.log(`[logEvent] Success: ${type}`);
-      }
-    } catch (e) {
-      console.error("Failed to log event:", type, e);
-    }
-  }, [sessionId]);
-
-  // Initialize session on page load
   useEffect(() => {
-    async function initSession() {
-      try {
-        const res = await fetch(`${BASE_URL}/api/sessions`, { method: "POST" });
-        const data = await res.json();
-        setSessionId(data.session_id);
-        console.log("Session initialized:", data.session_id);
-      } catch (e) {
-        console.error("Failed to initialize session:", e);
-      }
-    }
-    initSession();
-  }, []);
-
-  // Track LEAVE_TAB events
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.hidden && sessionId) {
-        logEvent("LEAVE_TAB", { timestamp: new Date().toISOString() });
-      }
-    };
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [sessionId, logEvent]);
-
-  // Timer countdown and TIME_UP event
-  useEffect(() => {
-    if (isSessionEnded || !sessionId) return;
-
-    const interval = setInterval(() => {
-      setTimeRemaining((prev) => {
-        if (prev <= 1) {
-          // Time's up!
-          clearInterval(interval);
-          logEvent("TIME_UP", {
-            session_duration_seconds: INITIAL_TIME,
-            timestamp: new Date().toISOString()
-          });
-          setIsSessionEnded(true);
-          alert("Time's up! Session has ended.");
-          return 0;
-        }
-        return prev - 1;
-      });
+    const timer = window.setInterval(() => {
+      setNow(new Date());
     }, 1000);
 
-    return () => clearInterval(interval);
-  }, [sessionId, isSessionEnded, logEvent]);
+    return () => window.clearInterval(timer);
+  }, []);
 
-  // Format time as MM:SS
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
+  const hh = now.getHours().toString().padStart(2, "0");
+  const mm = now.getMinutes().toString().padStart(2, "0");
+  const ss = now.getSeconds().toString().padStart(2, "0");
 
-  // Track CODE_EDIT events (debounced)
-  const handleCodeChange = (newCode: string) => {
-    setCodeText(newCode);
 
-    // Debounce CODE_EDIT logging
-    if (codeEditTimeoutRef.current) {
-      window.clearTimeout(codeEditTimeoutRef.current);
-    }
-    codeEditTimeoutRef.current = window.setTimeout(() => {
-      if (sessionId && newCode !== prevCode) {
-        logEvent("CODE_EDIT", {
-          added_lines: newCode.split("\n").length - prevCode.split("\n").length,
-          total_lines: newCode.split("\n").length,
-        });
-      }
-    }, 1000); // Log after 1 second of no typing
-  };
-
-  // Handle END_SESSION
-  const handleEndSession = async () => {
-    if (!sessionId || isSessionEnded) return;
-    await logEvent("END_SESSION", {
-      final_code_length: codeText.length,
-      total_ai_messages: aiMessages.length,
-    });
-    setIsSessionEnded(true);
-    alert("Session submitted successfully!");
-  };
-
-  async function handleRun(mode: "RUN" | "TEST" = "RUN") {
+  async function handleRun() {
     try {
       setIsRunning(true);
       setOutputText("Running...\n");
 
-      const res = await fetch(`${BASE_URL}/run`, {
+      const baseUrl = (import.meta as any).env?.VITE_PYTHON_BACKEND_URL || "http://localhost:8000";
+      const res = await fetch(`${baseUrl}/run`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
           code: codeText,
-          prev_code: prevCode,
           stdin: "",
           timeout_ms: 3000,
-          session_id: sessionId,
-          mode: mode,
         }),
       });
-
-      // Update prevCode after run
-      setPrevCode(codeText);
 
       if (!res.ok) {
         const text = await res.text();
@@ -229,11 +84,12 @@ export default function Index() {
 
     try {
       setIsAiLoading(true);
+      const baseUrl = (import.meta as any).env?.VITE_PYTHON_BACKEND_URL || "http://localhost:8000";
       const controller = new AbortController();
-      const timeoutMs = 60000;
+      const timeoutMs = 20000;
       const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
-      const res = await fetch(`${BASE_URL}/ai/chat`, {
+      const res = await fetch(`${baseUrl}/ai/chat`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -241,7 +97,6 @@ export default function Index() {
         signal: controller.signal,
         body: JSON.stringify({
           messages: nextMessages,
-          session_id: sessionId,
         }),
       });
 
@@ -253,23 +108,10 @@ export default function Index() {
         return;
       }
 
-      const data = (await res.json()) as {
-        assistant: string;
-        latency_ms?: number;
-        in_token?: number;
-        out_token?: number;
-      };
-
-      // Log AI metrics
-      console.log("AI Response Metrics:", {
-        latency_ms: data.latency_ms,
-        in_token: data.in_token,
-        out_token: data.out_token,
-      });
-
+      const data = (await res.json()) as { assistant: string };
       setAiMessages([...nextMessages, { role: "assistant", content: data.assistant || "" }]);
     } catch (e: any) {
-      const msg = e?.name === "AbortError" ? "Request timed out. Please try again." : e;
+      const msg = e?.name === "AbortError" ? "Request timed out. Is Ollama running and the model downloaded?" : e;
       setAiMessages([
         ...nextMessages,
         { role: "assistant", content: msg?.message ? String(msg.message) : String(msg) },
@@ -279,8 +121,23 @@ export default function Index() {
     }
   }
 
+if (isSubmitted) {
   return (
-    <div className="flex h-screen bg-white font-['Inter']">
+    <div className="flex h-screen items-center justify-center bg-white font-['Inter']">
+      <div className="text-center space-y-4">
+        <h1 className="text-2xl font-semibold text-black">
+          Your answer is submitted
+        </h1>
+        <p className="text-gray-600">
+          Thank you for your submission.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+return (
+  <div className="flex h-screen bg-white font-['Inter']">
       <SideMenu
         brandTitle="INSE MVP"
         mobileMenuOpen={mobileMenuOpen}
@@ -303,12 +160,8 @@ export default function Index() {
             </h1>
           </div>
           <div className="flex items-center gap-2 lg:gap-4">
-            <DbStatusIndicator baseUrl={BASE_URL} />
-            <div className={`px-2 lg:px-4 py-1.5 lg:py-2 border rounded text-xs lg:text-sm font-mono ${timeRemaining <= 300
-              ? "border-red-500 text-red-600 bg-red-50"
-              : "border-gray-300 text-black"
-              }`}>
-              Time {formatTime(timeRemaining)}
+            <div className="px-2 lg:px-4 py-1.5 lg:py-2 border border-gray-300 rounded text-xs lg:text-sm text-black">
+              Time {hh}:{mm}:{ss}
             </div>
             <div className="hidden sm:flex items-center gap-2">
               <img
@@ -432,61 +285,67 @@ export default function Index() {
                 </div>
               </div>
             </div>
+{/* Code Editor + Console (Coding test style) */}
+<div className="border border-gray-300 rounded bg-white overflow-hidden">
+  {/* Top bar */}
+  <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50">
+    <div className="flex items-center gap-3">
+      <div className="text-sm font-medium text-black">Code Editor</div>
+      <div className="text-xs text-gray-600 border border-gray-300 rounded px-2 py-1 bg-white">
+        Python
+      </div>
+      <div className="text-xs text-gray-600">main.py</div>
+    </div>
 
-            {/* Code Editor Section */}
-            <div className="flex flex-col">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
-                <h2 className="text-base lg:text-lg font-medium text-black">
-                  Code editor / TERMINAL
-                </h2>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => handleRun("RUN")}
-                    disabled={isRunning}
-                    className="px-4 lg:px-6 py-2 bg-black text-white text-sm font-medium rounded hover:bg-gray-800 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                  >
-                    RUN
-                  </button>
-                  <button
-                    onClick={() => handleRun("TEST")}
-                    disabled={isRunning}
-                    className="px-4 lg:px-6 py-2 border border-gray-300 text-black text-sm font-medium rounded hover:bg-gray-50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                  >
-                    Run Test
-                  </button>
-                </div>
-              </div>
-              <textarea
-                value={codeText}
-                onChange={(e) => handleCodeChange(e.target.value)}
-                className="w-full h-64 border border-gray-300 rounded bg-gray-50 p-4 font-mono text-sm text-black resize-none focus:outline-none focus:ring-2 focus:ring-black"
-                placeholder="// write code here.."
-              />
-            </div>
+    <div className="flex gap-2">
+      <button
+        onClick={handleRun}
+        disabled={isRunning}
+        className="px-4 py-2 bg-black text-white text-sm font-medium rounded hover:bg-gray-800 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+      >
+        {isRunning ? "Running..." : "Run"}
+      </button>
+      <button
+        type="button"
+        className="px-4 py-2 border border-gray-300 text-black text-sm font-medium rounded hover:bg-gray-100 transition-colors"
+      >
+        Run Tests
+      </button>
+    </div>
+  </div>
 
-            {/* Output Section */}
-            <div className="flex flex-col">
-              <h2 className="text-base font-medium text-black mb-4">
-                Output / Error logs
-              </h2>
-              <div className="w-full min-h-[120px] border border-gray-300 rounded bg-gray-50 p-4 font-mono text-sm text-black whitespace-pre-wrap">
-                {outputText || ""}
-              </div>
-            </div>
-          </div>
+  {/* Editor */}
+  <div className="bg-slate-900">
+    <textarea
+      value={codeText}
+      onChange={(e) => setCodeText(e.target.value)}
+      className="w-full h-72 bg-transparent p-4 font-mono text-sm text-white resize-none focus:outline-none"
+      placeholder="// write code here.."
+      spellCheck={false}
+    />
+  </div>
+
+      {/* Console */}
+      <div className="border-t border-gray-200 bg-white">
+        <div className="flex items-center gap-4 px-4 py-2 border-b border-gray-200 bg-gray-50">
+          <div className="text-sm font-medium text-black">Console</div>
+          <div className="text-xs text-gray-600">Output / Error logs</div>
         </div>
+        <div className="w-full min-h-[140px] max-h-[220px] overflow-auto bg-slate-900 p-4 font-mono text-sm text-slate-100 whitespace-pre-wrap">
+          {outputText || ""}
+        </div>
+      </div>
+    </div> 
+  </div> 
+</div>   
 
         <footer className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 lg:px-6 py-4 border-t border-gray-200 bg-gray-50 flex-shrink-0">
           <button
             type="button"
-            onClick={handleEndSession}
-            disabled={isSessionEnded}
-            className={`w-full sm:w-auto px-4 lg:px-6 py-2 text-sm font-semibold rounded transition-colors ${isSessionEnded
-              ? "bg-gray-300 text-gray-600 cursor-not-allowed"
-              : "bg-green-600 text-white hover:bg-green-700"
-              }`}
+            onClick={() => setIsSubmitted(true)}
+            className="w-full sm:w-auto px-4 lg:px-6 py-2 bg-black text-white text-sm font-semibold rounded hover:bg-gray-800 transition-colors"
           >
-            {isSessionEnded ? "Submitted" : "Submit Solution"}
+            Submit Solution
           </button>
           <div className="text-xs lg:text-sm text-black">AI usage is allowed</div>
         </footer>
