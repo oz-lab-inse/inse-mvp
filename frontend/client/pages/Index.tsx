@@ -4,10 +4,37 @@ import SideMenu from "@/components/SideMenu";
 
 const BASE_URL = (import.meta as any).env?.VITE_PYTHON_BACKEND_URL || "http://localhost:8000";
 
+function DbStatusIndicator({ baseUrl }: { baseUrl: string }) {
+  const [status, setStatus] = useState<"checking" | "connected" | "disconnected">("checking");
+
+  useEffect(() => {
+    async function check() {
+      try {
+        const res = await fetch(`${baseUrl}/db-health`);
+        const data = await res.json();
+        setStatus(data.db_ok ? "connected" : "disconnected");
+      } catch {
+        setStatus("disconnected");
+      }
+    }
+    check();
+    const interval = setInterval(check, 10000);
+    return () => clearInterval(interval);
+  }, [baseUrl]);
+
+  if (status === "checking") return <span className="text-xs text-gray-400">DB...</span>;
+  if (status === "disconnected") return <span className="text-xs text-red-500 font-bold">DB OFF</span>;
+  return <span className="text-xs text-green-600 font-bold">DB ON</span>;
+}
+
 export default function Index() {
   const [problemText, setProblemText] = useState("");
-  const [codeText, setCodeText] = useState("// write code here..");
-  const [prevCode, setPrevCode] = useState("// write code here..");
+  const [codeText, setCodeText] = useState(
+    "class Solution:\n    def twoSum(self, nums: List[int], target: int) -> List[int]:\n        pass",
+  );
+  const [prevCode, setPrevCode] = useState(
+    "class Solution:\n    def twoSum(self, nums: List[int], target: int) -> List[int]:\n        pass",
+  );
   const [outputText, setOutputText] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
@@ -29,9 +56,14 @@ export default function Index() {
 
   // Helper function to log events to backend
   const logEvent = useCallback(async (type: string, payload: object) => {
-    if (!sessionId) return;
+    console.log(`[logEvent] Attempting to log: ${type}`, { sessionId });
+
+    if (!sessionId) {
+      console.warn("[logEvent] Skipped: No sessionId available yet.");
+      return;
+    }
     try {
-      await fetch(`${BASE_URL}/api/events`, {
+      const res = await fetch(`${BASE_URL}/api/events`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -41,6 +73,13 @@ export default function Index() {
           ts: Date.now(),
         }),
       });
+      if (!res.ok) {
+        console.error(`[logEvent] Failed: ${res.status} ${res.statusText}`);
+        const text = await res.text();
+        console.error(`[logEvent] Response: ${text}`);
+      } else {
+        console.log(`[logEvent] Success: ${type}`);
+      }
     } catch (e) {
       console.error("Failed to log event:", type, e);
     }
@@ -264,6 +303,7 @@ export default function Index() {
             </h1>
           </div>
           <div className="flex items-center gap-2 lg:gap-4">
+            <DbStatusIndicator baseUrl={BASE_URL} />
             <div className={`px-2 lg:px-4 py-1.5 lg:py-2 border rounded text-xs lg:text-sm font-mono ${timeRemaining <= 300
               ? "border-red-500 text-red-600 bg-red-50"
               : "border-gray-300 text-black"
@@ -429,7 +469,7 @@ export default function Index() {
               <h2 className="text-base font-medium text-black mb-4">
                 Output / Error logs
               </h2>
-              <div className="w-full min-h-[120px] border border-gray-300 rounded bg-gray-50 p-4 font-mono text-sm text-black">
+              <div className="w-full min-h-[120px] border border-gray-300 rounded bg-gray-50 p-4 font-mono text-sm text-black whitespace-pre-wrap">
                 {outputText || ""}
               </div>
             </div>

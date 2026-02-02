@@ -3,6 +3,12 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import json
+import uuid
+import time
+import difflib
+from datetime import datetime
+from contextlib import contextmanager
 
 import httpx
 from dotenv import load_dotenv
@@ -11,9 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import google.generativeai as genai
 from psycopg_pool import ConnectionPool
-import difflib
-import time
-from contextlib import contextmanager
+from psycopg.types.json import Json
 
 load_dotenv()
 
@@ -26,6 +30,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 # Gemini Configuration
 GEMINI_API_KEY = os.environ.get("GOOGLE_API_KEY")
 if GEMINI_API_KEY:
@@ -34,21 +39,24 @@ if GEMINI_API_KEY:
 # DB Connection
 pool: ConnectionPool | None = None
 
-
 def init_db() -> None:
     global pool
     db_url = os.environ.get("DATABASE_URL") or "postgresql://postgres:saram1nse001@db.xcymbfpvltvntopbxaym.supabase.co:5432/postgres"
     if not db_url:
-        raise RuntimeError("DATABASE_URL is not set")
-    pool = ConnectionPool(conninfo=db_url, min_size=1, max_size=10)
-
+        print("DATABASE_URL is not set, skipping DB init")
+        return
+    try:
+        pool = ConnectionPool(conninfo=db_url, min_size=1, max_size=10)
+        print("DB Connection Pool initialized")
+    except Exception as e:
+        print(f"Failed to initialize DB pool: {e}")
+        pool = None
 
 def close_db() -> None:
     global pool
     if pool is not None:
         pool.close()
         pool = None
-
 
 @contextmanager
 def get_db():
@@ -58,17 +66,93 @@ def get_db():
         with conn.cursor() as cur:
             yield conn, cur
 
+# Models & Initial Data
+DEFAULT_CANDIDATE_ID = None
+DEFAULT_TASK_ID = None
+
+def ensure_initial_data():
+    global DEFAULT_CANDIDATE_ID, DEFAULT_TASK_ID
+    if pool is None:
+        print("DB Pool is None, skipping initial data")
+        return
+    try:
+        with get_db() as (conn, cur):
+            print("Starting initial data check...")
+            # 1. Recruiter
+            cur.execute("SELECT recruiter_id FROM recruiters LIMIT 1")
+            row = cur.fetchone()
+            if row:
+                rid = row[0]
+                print(f"Using existing recruiter: {rid}")
+            else:
+                rid = str(uuid.uuid4())
+                cur.execute(
+                    "INSERT INTO recruiters (recruiter_id, name, company) VALUES (%s, %s, %s)",
+                    (rid, "Inse Recruiter", "INSE AI")
+                )
+                print(f"Created Default Recruiter: {rid}")
+
+            # 2. Assessment
+            cur.execute("SELECT assessment_id FROM assessments LIMIT 1")
+            row = cur.fetchone()
+            if row:
+                aid = row[0]
+                print(f"Using existing assessment: {aid}")
+            else:
+                aid = str(uuid.uuid4())
+                cur.execute(
+                    "INSERT INTO assessments (assessment_id, recruiter_id, title, level, duration_minutes, status) VALUES (%s, %s, %s, %s, %s, %s)",
+                    (aid, rid, "Python Coding Test", "Junior", 60, "DRAFT")
+                )
+                print(f"Created Default Assessment: {aid}")
+
+            # 3. Task
+            cur.execute("SELECT task_id FROM tasks LIMIT 1")
+            row = cur.fetchone()
+            if row:
+                DEFAULT_TASK_ID = row[0]
+                print(f"Using existing task: {DEFAULT_TASK_ID}")
+            else:
+                tid = str(uuid.uuid4())
+                cur.execute(
+                    "INSERT INTO tasks (task_id, assessment_id, title, description, language, time_limit) VALUES (%s, %s, %s, %s, %s, %s)",
+                    (tid, aid, "Two Sum", "Implement Two Sum", "python", 3600)
+                )
+                DEFAULT_TASK_ID = tid
+                print(f"Created Default Task: {tid}")
+
+            # 4. Candidate
+            cur.execute("SELECT candidate_id FROM candidates WHERE email = 'guest@inse.ai'")
+            row = cur.fetchone()
+            if row:
+                DEFAULT_CANDIDATE_ID = row[0]
+                print(f"Using existing candidate: {DEFAULT_CANDIDATE_ID}")
+            else:
+                uid = str(uuid.uuid4())
+                cur.execute(
+                    "INSERT INTO candidates (candidate_id, name, email) VALUES (%s, %s, %s)",
+                    (uid, "Guest User", "guest@inse.ai")
+                )
+                DEFAULT_CANDIDATE_ID = uid
+                print(f"Created Default Candidate: {uid}")
+            
+            conn.commit()
+            print("Initial data ensure SUCCESS.")
+    except Exception as e:
+        print(f"!!! Failed to ensure initial data: {e}")
+        import traceback
+        traceback.print_exc()
 
 @app.on_event("startup")
 def _startup():
     init_db()
-
+    ensure_initial_data()
 
 @app.on_event("shutdown")
 def _shutdown():
     close_db()
 
-# Models
+# Request/Response Models
 class RunRequest(BaseModel):
     code: str = Field(..., description="Python source code")
     prev_code: str | None = Field(None, description="Previous version of code for delta calculation")
@@ -77,18 +161,15 @@ class RunRequest(BaseModel):
     session_id: str | None = None
     mode: str = "RUN" # "RUN" or "TEST"
 
-
 class RunResponse(BaseModel):
     stdout: str
     stderr: str
     exit_code: int
     timed_out: bool
 
-
 class ChatMessage(BaseModel):
     role: str
     content: str
-
 
 class AiChatRequest(BaseModel):
     messages: list[ChatMessage]
@@ -99,216 +180,214 @@ class AiChatRequest(BaseModel):
     in_token: int | None = None
     out_token: int | None = None
 
-
 class AiChatResponse(BaseModel):
     assistant: str
     latency_ms: int = 0
     in_token: int = 0
     out_token: int = 0
 
+class EventRequest(BaseModel):
+    session_id: str
+    type: str
+    payload: dict = {}
+    ts: int | None = None
 
+# API Endpoints
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 @app.get("/db-health")
 def db_health():
-    with get_db() as (_, cur):
-        cur.execute("SELECT 1;")
-        return {"db_ok": cur.fetchone()[0] == 1}
+    if pool is None:
+        return {"db_ok": False, "error": "Pool not initialized"}
+    try:
+        with get_db() as (_, cur):
+            cur.execute("SELECT 1;")
+            return {"db_ok": cur.fetchone()[0] == 1}
+    except Exception as e:
+        return {"db_ok": False, "error": str(e)}
 
 @app.post("/api/sessions")
 def create_session():
-    import uuid
     session_id = str(uuid.uuid4())
-    # Optionally insert into a sessions table if it exists
-    # For now, we just return the UUID
+    if pool is not None:
+        try:
+            global DEFAULT_CANDIDATE_ID, DEFAULT_TASK_ID
+            if not DEFAULT_CANDIDATE_ID or not DEFAULT_TASK_ID:
+                ensure_initial_data()
+            cid = DEFAULT_CANDIDATE_ID
+            tid = DEFAULT_TASK_ID
+            with get_db() as (conn, cur):
+                if cid and tid:
+                    cur.execute(
+                        "INSERT INTO sessions (session_id, candidate_id, task_id, status) VALUES (%s, %s, %s, %s)",
+                        (session_id, cid, tid, 'NOT_STARTED')
+                    )
+                    conn.commit()
+                    print(f"Created session in DB: {session_id}")
+                else:
+                     print(f"Missing Cid({cid}) or Tid({tid})")
+        except Exception as e:
+            print(f"Failed to create session in DB: {e}")
     return {"session_id": session_id}
 
-def insert_ide_event(session_id: str, event_type: str, payload: dict) -> str:
-    with get_db() as (conn, cur):
-        cur.execute(
-            """
-            INSERT INTO ide_events (session_id, event_type, payload)
-            VALUES (%s, %s, %s)
-            RETURNING ide_event_id
-            """,
-            (session_id, event_type, payload),
-        )
-        ide_event_id = cur.fetchone()[0]
-        conn.commit()
-        return ide_event_id
-
-
-def count_added_lines(prev: str, curr: str) -> int:
-    added = 0
-    for line in difflib.unified_diff(prev.splitlines(), curr.splitlines()):
-        if line.startswith("+") and not line.startswith("+++"):
-            added += 1
-    return added
-
-def is_syntax_error(stderr: str) -> bool:
-    return "syntaxerror" in (stderr or "").lower()
-
-class EventCreate(BaseModel):
-    session_id: str
-    type: str
-    payload: dict
-    ts: int
-
 @app.post("/api/events")
-def create_event(body: EventCreate):
-    ide_event_id = insert_ide_event(
-        body.session_id,
-        body.type,
-        {**body.payload, "client_ts": body.ts},
-    )
-    return {"ide_event_id": ide_event_id}
+def log_event_endpoint(body: EventRequest):
+    if not body.session_id:
+        raise HTTPException(status_code=400, detail="Session ID required")
+    evt_id = insert_ide_event(body.session_id, body.type, body.payload)
+    if not evt_id:
+        raise HTTPException(status_code=500, detail="Failed to save event")
+    if body.type in ("END_SESSION", "TIME_UP"):
+        generate_report(body.session_id)
+    return {"status": "ok", "event_id": evt_id}
 
 @app.post("/run", response_model=RunResponse)
 def run_code(body: RunRequest):
     python_exe = os.environ.get("PYTHON_EXECUTABLE") or "python"
-    start_ms = int(time.time() * 1000)
-    # CODE_EDIT 
+    
     if body.session_id:
         insert_ide_event(
             body.session_id,
             "CODE_EDIT",
             {
-                "added_lines": (
-                    count_added_lines(body.prev_code, body.code)
-                    if body.prev_code is not None
-                    else None
-                ),
+                "added_lines": count_added_lines(body.prev_code, body.code) if body.prev_code is not None else 0,
                 "total_lines": len(body.code.splitlines()),
-            },
+            }
         )
-        
-    with tempfile.TemporaryDirectory(prefix="inse_py_") as tmpdir:
-        file_path = os.path.join(tmpdir, "main.py")
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(body.code)
 
+    # Simplified test runner logic as per taxonomies
+    test_cases_json = json.dumps([
+        {"input": {"nums": [2, 7, 11, 15], "target": 9}, "expected": [0, 1]},
+        {"input": {"nums": [3, 2, 4], "target": 6}, "expected": [1, 2]},
+        {"input": {"nums": [3, 3], "target": 6}, "expected": [0, 1]},
+    ])
+    
+    code_to_run = f"""
+from typing import List
+import sys
+{body.code}
+if __name__ == "__main__":
+    test_cases = {test_cases_json}
+    try:
+        sol = Solution()
+        passed = 0
+        for tc in test_cases:
+            res = sol.twoSum(tc['input']['nums'], tc['input']['target'])
+            if sorted(res or []) == sorted(tc['expected']):
+                passed += 1
+        if passed == len(test_cases): sys.exit(0)
+        else: sys.exit(1)
+    except Exception: sys.exit(1)
+"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fpath = os.path.join(tmpdir, "main.py")
+        with open(fpath, "w", encoding="utf-8") as f: f.write(code_to_run)
         try:
-            proc = subprocess.run(
-                [python_exe, file_path],
-                input=body.stdin,
-                text=True,
-                capture_output=True,
-                timeout=body.timeout_ms / 1000.0,
-            )
-            # Run Result
+            proc = subprocess.run([python_exe, fpath], capture_output=True, text=True, timeout=body.timeout_ms/1000.0)
             if body.session_id:
                 if is_syntax_error(proc.stderr):
-                    insert_ide_event(
-                        body.session_id,
-                        "SYNTAX_ERROR",
-                        {"stderr": proc.stderr},
-                    )
+                    insert_ide_event(body.session_id, "SYNTAX_ERROR", {"stderr": proc.stderr})
                 else:
-                    insert_ide_event(
-                        body.session_id,
-                        "RUN_SUCCEED",
-                        {"exit_code": proc.returncode},
-                    )
-
+                    insert_ide_event(body.session_id, "RUN_SUCCEED", {"exit_code": proc.returncode})
                 if body.mode.upper() == "TEST":
-                    insert_ide_event(
-                        body.session_id,
-                        "TEST_PASS" if proc.returncode == 0 else "TEST_FAIL",
-                        {"exit_code": proc.returncode},
-                    )
-            return RunResponse(
-                stdout=proc.stdout or "",
-                stderr=proc.stderr or "",
-                exit_code=int(proc.returncode),
-                timed_out=False,
-            )
-        except subprocess.TimeoutExpired as e:
-            stdout = "" if e.stdout is None else str(e.stdout)
-            stderr = "" if e.stderr is None else str(e.stderr)
-            # TLE
-            if body.session_id:
-                insert_ide_event(
-                    body.session_id,
-                    "TIME_LENGTH_EXCEEDED",
-                    {"timeout_ms": body.timeout_ms},
-                )
-            
-            return RunResponse(stdout=stdout, stderr=stderr, exit_code=-1, timed_out=True)
-
+                    insert_ide_event(body.session_id, "TEST_PASS" if proc.returncode == 0 else "TEST_FAIL", {"exit_code": proc.returncode})
+            return RunResponse(stdout=proc.stdout, stderr=proc.stderr, exit_code=proc.returncode, timed_out=False)
+        except subprocess.TimeoutExpired:
+            if body.session_id: insert_ide_event(body.session_id, "TIME_LENGTH_EXCEEDED", {"timeout_ms": body.timeout_ms})
+            return RunResponse(stdout="", stderr="Timeout", exit_code=-1, timed_out=True)
 
 @app.post("/ai/chat", response_model=AiChatResponse)
 def ai_chat(body: AiChatRequest):
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="Gemini API Key is not configured")
-
-    model_name = body.model or os.environ.get("GEMINI_MODEL") or "gemini-3-flash-preview"
+    if not GEMINI_API_KEY: raise HTTPException(status_code=500, detail="No Gemini Key")
+    model_name = body.model or "gemini-1.5-flash"
     
-    # ASK_AI
-    ide_event_id = body.ide_event_id
-    if ide_event_id is None and body.session_id:
-        ide_event_id = insert_ide_event(
-            body.session_id,
-            "ASK_AI",
-            {"model": model_name, "messages": len(body.messages)},
-        )
+    start_time = time.time()
+    model = genai.GenerativeModel(model_name)
+    last_msg = body.messages[-1].content
+    
+    # Simple classification for taxonomy
+    etype = "ASK_AI"
+    if "fix" in last_msg.lower() or "error" in last_msg.lower(): etype = "DEBUG_CODE_AI"
+    elif "write" in last_msg.lower() or "code" in last_msg.lower(): etype = "GENERATE_CODE_AI"
+    
+    evt_id = None
+    if body.session_id:
+        evt_id = insert_ide_event(body.session_id, etype, {"model": model_name})
 
     try:
-        # Start timing
-        start_time = time.time()
-        
-        model = genai.GenerativeModel(model_name)
-        
-        # Convert chat history to Gemini format
-        history = []
-        for m in body.messages[:-1]:
-            role = "user" if m.role == "user" else "model"
-            history.append({"role": role, "parts": [m.content]})
-            
-        chat = model.start_chat(history=history)
-        
-        last_message = body.messages[-1].content
-        response = chat.send_message(last_message)
+        response = model.generate_content(last_msg)
         content = response.text
+        latency = int((time.time() - start_time) * 1000)
         
-        # Calculate latency
-        latency_ms = int((time.time() - start_time) * 1000)
-        
-        # Extract token counts from response
-        in_token = 0
-        out_token = 0
-        if hasattr(response, 'usage_metadata') and response.usage_metadata:
-            in_token = getattr(response.usage_metadata, 'prompt_token_count', 0) or 0
-            out_token = getattr(response.usage_metadata, 'candidates_token_count', 0) or 0
+        in_t = getattr(response.usage_metadata, 'prompt_token_count', 0) if hasattr(response, 'usage_metadata') else 0
+        out_t = getattr(response.usage_metadata, 'candidates_token_count', 0) if hasattr(response, 'usage_metadata') else 0
 
-        # AI_INTERACTION SAVE
-        if ide_event_id:
+        if evt_id:
             with get_db() as (conn, cur):
                 cur.execute(
-                    """
-                    INSERT INTO ai_interactions
-                        (ide_event_id, prompt, response, model_name, latency_ms, in_token, out_token)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        ide_event_id,
-                        last_message,
-                        content,
-                        model_name,
-                        latency_ms,
-                        in_token,
-                        out_token,
-                    ),
+                    "INSERT INTO ai_interactions (ide_event_id, prompt, response, model_name, latency_ms, in_token, out_token) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (evt_id, last_msg, content, model_name, latency, in_t, out_t)
                 )
                 conn.commit()
-        return AiChatResponse(
-            assistant=str(content),
-            latency_ms=latency_ms,
-            in_token=in_token,
-            out_token=out_token,
-        )
-
+        return AiChatResponse(assistant=content, latency_ms=latency, in_token=in_t, out_token=out_t)
     except Exception as e:
-        print(f"Gemini API Error: {e}")
-        raise HTTPException(status_code=502, detail=f"Gemini API request failed: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+# Logic Functions
+def calculate_metrics(events: list):
+    stats = {"tests_run": 0, "tests_passed": 0, "syntax_errors": 0, "ai_calls": 0, "code_edits": 0}
+    for etype, payload in events:
+        if etype == "TEST_PASS": stats["tests_run"] += 1; stats["tests_passed"] += 1
+        elif etype == "TEST_FAIL": stats["tests_run"] += 1
+        elif etype == "SYNTAX_ERROR": stats["syntax_errors"] += 1
+        elif etype.endswith("_AI"): stats["ai_calls"] += 1
+        elif etype == "CODE_EDIT": stats["code_edits"] += 1
+    
+    aeq = (stats["tests_passed"] / stats["tests_run"] * 100) if stats["tests_run"] > 0 else 0
+    ips = max(0, 100 - (stats["syntax_errors"] * 5))
+    reliance = (stats["ai_calls"] / (stats["code_edits"] + stats["ai_calls"]) * 100) if (stats["code_edits"] + stats["ai_calls"]) > 0 else 0
+    return {"aeq": aeq, "ips": ips, "reliance": reliance}
+
+def generate_report(session_id: str):
+    if pool is None: return
+    try:
+        with get_db() as (conn, cur):
+            cur.execute("SELECT event_type, payload FROM ide_events WHERE session_id = %s", (session_id,))
+            events = cur.fetchall()
+            if not events: return
+            res = calculate_metrics(events)
+            rid = str(uuid.uuid4())
+            cur.execute(
+                "INSERT INTO reports (report_id, session_id, overall_score, ai_reliance, debugging_score) VALUES (%s, %s, %s, %s, %s)",
+                (rid, session_id, res["aeq"], res["reliance"], res["ips"])
+            )
+            for name, val in [("AEQ", res["aeq"]), ("IPS", res["ips"]), ("AI_RELIANCE", res["reliance"])]:
+                cur.execute("INSERT INTO metrics (report_id, name, value, completed) VALUES (%s, %s, %s, %s)", (rid, name, val, True))
+            conn.commit()
+            print(f">>> Report generated for {session_id}")
+    except Exception as e: print(f"Report fail: {e}")
+
+def insert_ide_event(session_id: str, event_type: str, payload: dict) -> str | None:
+    if pool is None: return None
+    try:
+        with get_db() as (conn, cur):
+            cur.execute(
+                "INSERT INTO ide_events (session_id, event_type, payload, timestamp) VALUES (%s, %s, %s, %s) RETURNING ide_event_id",
+                (session_id, event_type, Json(payload), datetime.now())
+            )
+            eid = cur.fetchone()[0]
+            conn.commit()
+            return eid
+    except Exception as e: print(f"Insert fail: {e}"); return None
+
+def count_added_lines(prev: str, curr: str) -> int:
+    if not prev: return len(curr.splitlines())
+    added = 0
+    for line in difflib.unified_diff(prev.splitlines(), curr.splitlines()):
+        if line.startswith("+") and not line.startswith("+++"): added += 1
+    return added
+
+def is_syntax_error(stderr: str) -> bool:
+    return "syntaxerror" in (stderr or "").lower()
