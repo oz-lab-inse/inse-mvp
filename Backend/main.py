@@ -337,18 +337,49 @@ def ai_chat(body: AiChatRequest):
 
 # Logic Functions
 def calculate_metrics(events: list):
-    stats = {"tests_run": 0, "tests_passed": 0, "syntax_errors": 0, "ai_calls": 0, "code_edits": 0}
+    stats = {
+        "tests_run": 0,
+        "tests_passed": 0,
+        "syntax_errors": 0,
+        "ai_calls": 0,
+        "code_edits": 0,
+        "total_added_lines": 0
+    }
     for etype, payload in events:
-        if etype == "TEST_PASS": stats["tests_run"] += 1; stats["tests_passed"] += 1
-        elif etype == "TEST_FAIL": stats["tests_run"] += 1
-        elif etype == "SYNTAX_ERROR": stats["syntax_errors"] += 1
-        elif etype.endswith("_AI"): stats["ai_calls"] += 1
-        elif etype == "CODE_EDIT": stats["code_edits"] += 1
+        if etype == "TEST_PASS":
+            stats["tests_run"] += 1
+            stats["tests_passed"] += 1
+        elif etype == "TEST_FAIL":
+            stats["tests_run"] += 1
+        elif etype == "SYNTAX_ERROR":
+            stats["syntax_errors"] += 1
+        elif etype.endswith("_AI"):
+            stats["ai_calls"] += 1
+        elif etype == "CODE_EDIT":
+            stats["code_edits"] += 1
+            stats["total_added_lines"] += payload.get("added_lines", 0)
     
+    # AEQ: Algorithmic Efficiency Quotient (Accuracy Score 0-100)
     aeq = (stats["tests_passed"] / stats["tests_run"] * 100) if stats["tests_run"] > 0 else 0
-    ips = max(0, 100 - (stats["syntax_errors"] * 5))
-    reliance = (stats["ai_calls"] / (stats["code_edits"] + stats["ai_calls"]) * 100) if (stats["code_edits"] + stats["ai_calls"]) > 0 else 0
-    return {"aeq": aeq, "ips": ips, "reliance": reliance}
+    
+    # IPS: Iterative Problem Solving (Debugging Score 0-100)
+    ips = max(0, 100 - (stats["syntax_errors"] * 10))
+    
+    # EFF: Efficiency (Low AI reliance & concise coding)
+    # Higher is better. Let's base it on (1 - AI_reliance)
+    total_actions = stats["code_edits"] + stats["ai_calls"]
+    ai_reliance = (stats["ai_calls"] / total_actions) if total_actions > 0 else 0
+    eff = max(0, (1 - ai_reliance) * 100)
+
+    # Overall Score (Weighted Average)
+    overall = (aeq * 0.5) + (ips * 0.3) + (eff * 0.2)
+    
+    return {
+        "overall": round(overall, 2),
+        "aeq": round(aeq, 2),
+        "ips": round(ips, 2),
+        "eff": round(eff, 2)
+    }
 
 def generate_report(session_id: str):
     if pool is None: return
@@ -357,17 +388,32 @@ def generate_report(session_id: str):
             cur.execute("SELECT event_type, payload FROM ide_events WHERE session_id = %s", (session_id,))
             events = cur.fetchall()
             if not events: return
+            
             res = calculate_metrics(events)
             rid = str(uuid.uuid4())
+            
+            # Match schema in image: report_id, session_id, overall_score, aeq, eff, ips
             cur.execute(
-                "INSERT INTO reports (report_id, session_id, overall_score, ai_reliance, debugging_score) VALUES (%s, %s, %s, %s, %s)",
-                (rid, session_id, res["aeq"], res["reliance"], res["ips"])
+                """
+                INSERT INTO reports (report_id, session_id, overall_score, aeq, eff, ips) 
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (rid, session_id, res["overall"], res["aeq"], res["eff"], res["ips"])
             )
-            for name, val in [("AEQ", res["aeq"]), ("IPS", res["ips"]), ("AI_RELIANCE", res["reliance"])]:
-                cur.execute("INSERT INTO metrics (report_id, name, value, completed) VALUES (%s, %s, %s, %s)", (rid, name, val, True))
+            
+            # Also insert into detailed metrics table
+            for name, val in [("AEQ", res["aeq"]), ("IPS", res["ips"]), ("EFF", res["eff"])]:
+                cur.execute(
+                    "INSERT INTO metrics (report_id, name, value, completed) VALUES (%s, %s, %s, %s)",
+                    (rid, name, val, True)
+                )
+            
             conn.commit()
-            print(f">>> Report generated for {session_id}")
-    except Exception as e: print(f"Report fail: {e}")
+            print(f">>> Report generated for {session_id} | Overall: {res['overall']}")
+    except Exception as e:
+        print(f"Report fail: {e}")
+        import traceback
+        traceback.print_exc()
 
 def insert_ide_event(session_id: str, event_type: str, payload: dict) -> str | None:
     if pool is None: return None
