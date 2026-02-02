@@ -257,14 +257,14 @@ def run_code(body: RunRequest):
             }
         )
 
-    # Simplified test runner logic as per taxonomies
-    test_cases_json = json.dumps([
-        {"input": {"nums": [2, 7, 11, 15], "target": 9}, "expected": [0, 1]},
-        {"input": {"nums": [3, 2, 4], "target": 6}, "expected": [1, 2]},
-        {"input": {"nums": [3, 3], "target": 6}, "expected": [0, 1]},
-    ])
-    
-    code_to_run = f"""
+    if body.mode.upper() == "TEST":
+        # Wrap for TEST mode with Solution class expectation
+        test_cases_json = json.dumps([
+            {"input": {"nums": [2, 7, 11, 15], "target": 9}, "expected": [0, 1]},
+            {"input": {"nums": [3, 2, 4], "target": 6}, "expected": [1, 2]},
+            {"input": {"nums": [3, 3], "target": 6}, "expected": [0, 1]},
+        ])
+        code_to_run = f"""
 from typing import List
 import sys
 {body.code}
@@ -278,9 +278,15 @@ if __name__ == "__main__":
             if sorted(res or []) == sorted(tc['expected']):
                 passed += 1
         if passed == len(test_cases): sys.exit(0)
-        else: sys.exit(1)
-    except Exception: sys.exit(1)
+        else: sys.stderr.write(f"FAILED: {{passed}}/{{len(test_cases)}} cases passed\\n"); sys.exit(1)
+    except Exception as e:
+        sys.stderr.write(f"ERROR: {{str(e)}}\\n")
+        sys.exit(1)
 """
+    else:
+        # Just run the raw code for normal RUN mode
+        code_to_run = body.code
+
     with tempfile.TemporaryDirectory() as tmpdir:
         fpath = os.path.join(tmpdir, "main.py")
         with open(fpath, "w", encoding="utf-8") as f: f.write(code_to_run)
@@ -301,7 +307,7 @@ if __name__ == "__main__":
 @app.post("/ai/chat", response_model=AiChatResponse)
 def ai_chat(body: AiChatRequest):
     if not GEMINI_API_KEY: raise HTTPException(status_code=500, detail="No Gemini Key")
-    model_name = body.model or "gemini-1.5-flash"
+    model_name = body.model or os.environ.get("GEMINI_MODEL") or "gemini-3-flash-preview"
     
     start_time = time.time()
     model = genai.GenerativeModel(model_name)
