@@ -1,180 +1,88 @@
 # INSE MVP
 
 ## 개요
-이 저장소는 `frontend/`에 위치한 풀스택(React SPA + Express API) 프로젝트입니다.
+이 프로젝트는 AI 기반의 코딩 테스트 플랫폼 **INSE**의 MVP 버전입니다. 후보자의 코딩 과정(편집, 실행, AI 인터뷰)을 실시간으로 추적하고, 이를 기반으로 다각도의 역량 지표(AEQ, IPS, EFF)를 자동으로 산출합니다.
 
-- 개발 환경에서는 Vite 개발 서버(포트 `8080`)에 Express 서버를 미들웨어로 붙여 **프론트/백엔드를 단일 포트로** 실행합니다.
-- 배포 환경에서는 정적 SPA(`dist/spa`) + Netlify Functions(`netlify/functions`) 구성을 사용하며, `/api/*` 요청은 Netlify Function으로 리다이렉트됩니다.
+- **Frontend**: React + Vite 기반의 IDE 환경
+- **Backend**: FastAPI(Python) 기반의 코드 실행 및 AI 엔진 & 데이터 가공
+- **Database**: Supabase(PostgreSQL) 기반의 실시간 이벤트 로깅 및 리포트 저장
+
+## 주요 기능
+- **실시간 IDE**: Python 코드 편집 및 실행, 테스트 케이스 검증
+- **AI 인터뷰**: Google Gemini 기반의 지능형 코딩 어시스턴트
+- **데이터 파이프라인**: 모든 사용자 액션을 세션별로 Supabase에 실시간 적재
+- **자동 채점 엔진**: 시험 종료 시 로그를 분석하여 3대 핵심 지표 산출
+  - **AEQ (Algorithmic Efficiency Quotient)**: 알고리즘 정확도 및 성능 지표
+  - **IPS (Iterative Problem Solving)**: 오류 해결 및 디버깅 역량 지표
+  - **EFF (Efficiency)**: AI 활용도 및 코드 작성 효율성 지표
 
 ## 기술 스택
-- **Frontend**: React 18, React Router 6, TypeScript, Vite, TailwindCSS
-- **Backend**: Express (Vite dev server에 미들웨어로 통합)
-- **Serverless(배포)**: Netlify Functions + `serverless-http`
-- **State/Fetch**: TanStack React Query
-- **Test**: Vitest
+- **Frontend**: React 18, TypeScript, Vite, TailwindCSS, Lucide Icons
+- **Backend**: FastAPI, Psycopg 3 (Connection Pooling), Google Generative AI (Gemini)
+- **Database**: Supabase (PostgreSQL)
 
 ## 프로젝트 구조
-```
+```text
 Backend/
-  main.py                 # Python 실행 + 로컬 AI(Ollama) 프록시(FastAPI)
-  requirements.txt        # Python 백엔드 의존성
+  main.py                 # 백엔드 통합 엔트리 (API, DB, AI, Scoring)
+  requirements.txt        # Python 의존성
 frontend/
-  client/                 # React SPA
-  server/                 # Express API
-  shared/                 # client/server에서 공용으로 사용하는 타입/유틸
-  netlify/
-    functions/            # Netlify Functions 엔트리
-  vite.config.ts          # Vite(dev) 설정 + Express 미들웨어 플러그인
-  vite.config.server.ts   # 서버(Express) 번들 빌드 설정
-  netlify.toml            # Netlify build/functions/redirect 설정
+  client/                 # React IDE 프론트엔드
+    pages/Index.tsx       # 메인 IDE 인터페이스 및 로깅 로직
+  server/                 # Express API (미들웨어)
 ```
 
-## 요구 사항
-- Node.js (서버 빌드 타깃이 `node22`로 설정되어 있어 **Node 22 권장**)
-- 패키지 매니저: `pnpm` 권장 (프로젝트에 `pnpm-lock.yaml` 및 `packageManager`가 설정되어 있음)
+## 시작하기
 
-## 로컬 실행
-아래 명령어는 `frontend/` 디렉토리에서 실행합니다.
+### 1. Backend 설정
+`Backend/` 디렉토리에서 작업합니다.
 
-### 설치
-```bash
-pnpm install
-```
-
-### 개발 서버 실행
-```bash
-pnpm dev
-```
-
-- 기본 접속: `http://localhost:8080`
-- API는 `/api/*` 프리픽스를 사용합니다.
-
-## Python Backend (코드 실행 + 로컬 AI)
-이 저장소는 `Backend/`에 별도의 Python(FastAPI) 서버를 포함합니다.
-
-- 코드 실행: `POST /run`
-- AI Assistant: `POST /ai/chat` (로컬 Ollama로 프록시)
-
-### 요구 사항
-- Python 3.10+ 권장
-
-### 설치
-아래 명령어는 `Backend/` 디렉토리에서 실행합니다.
+**요구 사항**: Python 3.10+
 
 ```bash
+# 가상환경 생성 및 활성화
 python -m venv .venv
-./.venv/Scripts/activate
-python -m pip install -r requirements.txt
+./.venv/Scripts/activate  # Windows
+source .venv/bin/activate # macOS/Linux
+
+# 의존성 설치
+pip install -r requirements.txt
 ```
 
-### 실행
+**환경 변수 (.env)**:
+```env
+GOOGLE_API_KEY=your_gemini_api_key
+DATABASE_URL=your_supabase_postgresql_url
+```
 
+**서버 실행**:
 ```bash
 python -m uvicorn main:app --reload --port 8000
 ```
 
-### 엔드포인트
+### 2. Frontend 설정
+`frontend/` 디렉토리에서 작업합니다.
 
-- `GET /health`
-  - 헬스 체크
-- `POST /run`
-  - Request JSON
-    - `code`: string
-    - `stdin`: string
-    - `timeout_ms`: number
-  - Response JSON
-    - `stdout`: string
-    - `stderr`: string
-    - `exit_code`: number
-    - `timed_out`: boolean
-- `POST /ai/chat`
-  - 로컬 Ollama의 `POST /api/chat`을 호출해서 응답 텍스트를 반환합니다.
-  - Request JSON
-    - `messages`: `{ role, content }[]`
-    - `model`(optional): string
-  - Response JSON
-    - `assistant`: string
-
-## 로컬 AI (Ollama)
-AI Assistant는 기본적으로 로컬 Ollama를 사용합니다.
-
-### 준비
-1) Ollama 설치/실행
-2) 모델 다운로드(예시)
+**요구 사항**: Node.js 22+, `pnpm` 권장
 
 ```bash
-ollama pull llama3.1
+# 의존성 설치
+pnpm install
+
+# 개발 서버 실행
+pnpm dev
 ```
+- 접속 주소: `http://localhost:8080`
 
-### 환경 변수 (Python Backend)
-- `OLLAMA_BASE_URL` (default: `http://localhost:11434`)
-- `OLLAMA_MODEL` (default: `llama3.1`)
+## 데이터베이스 스키마
+프로젝트는 Supabase의 `public` 스키마 아래 다음 테이블들을 사용합니다:
+- `candidates`: 후보자 정보
+- `tasks`: 문제 정보
+- `sessions`: 시험 세션 정보
+- `ide_events`: 모든 사용자 행위 로그 (JSONB 페이로드)
+- `ai_interactions`: AI 대화 상세 기록
+- `reports`: 최종 산출된 역량 점수 및 리포트
+- `metrics`: 세부 지표 데이터
 
-## IDE 기능 사용법
-메인 화면(`/`)에서:
-
-- **RUN**
-  - 현재 에디터의 Python 코드를 `Backend`의 `POST /run`으로 실행합니다.
-  - 결과는 **Output / Error logs**에 출력됩니다.
-- **AI Assistant**
-  - 채팅 입력 후 Send(또는 Enter)하면 `Backend`의 `POST /ai/chat`을 호출합니다.
-
-## 빌드 / 프로덕션 실행
-### 전체 빌드(클라이언트 + 서버)
-```bash
-pnpm build
-```
-
-### 서버 실행(프로덕션 번들)
-```bash
-pnpm start
-```
-
-## 테스트 / 타입체크
-```bash
-pnpm test
-pnpm typecheck
-```
-
-## 환경 변수
-현재 `frontend/.env`에 아래 값들이 정의되어 있습니다.
-
-- `VITE_PUBLIC_BUILDER_KEY`
-- `PING_MESSAGE`
-
-추가로, 프론트에서 Python Backend를 지정하려면 아래 환경 변수를 사용할 수 있습니다.
-
-- `VITE_PYTHON_BACKEND_URL` (default: `http://localhost:8000`)
-
-주의:
-- `VITE_`로 시작하는 값은 Vite를 통해 **클라이언트 번들에 포함**될 수 있습니다.
-- 민감정보(Secret)는 `.env`에 커밋하지 말고, 배포 환경(Netlify/Vercel 등)의 환경변수 설정을 사용하세요.
-
-## Netlify 배포
-`frontend/netlify.toml` 기준:
-
-- **Build command**: `npm run build:client`
-- **Publish directory**: `dist/spa`
-- **Functions directory**: `netlify/functions`
-- **Redirects**: `/api/*` -> `/.netlify/functions/api/:splat`
-
-Netlify Function 엔트리는 `frontend/netlify/functions/api.ts`이며, `serverless-http`로 Express 앱(`createServer()`)을 감싸서 동작합니다.
-
-## 주요 라우팅(프론트)
-SPA 라우팅은 `frontend/client/App.tsx`에서 관리합니다.
-
-### 페이지별 설명 / 접근 방법
-로컬 개발 서버(`pnpm dev`) 실행 시 기본 접속 URL은 `http://localhost:8080` 입니다.
-
-| Page | Path | 접근 방법 | 설명 |
-| --- | --- | --- | --- |
-| Index | `/` | `http://localhost:8080/` | 랜딩/메인 화면 |
-| Browse | `/browse` | `http://localhost:8080/browse` | 항목(콘텐츠) 탐색 화면 |
-| Setting | `/setting` | `http://localhost:8080/setting` | 설정 화면 |
-| History | `/history` | `http://localhost:8080/history` | 히스토리/기록 화면 |
-| Recruiter | `/recruiter` | `http://localhost:8080/recruiter` | 리크루터 관련 화면 |
-| Candidate Report | `/candidate-report` | `http://localhost:8080/candidate-report` | 후보자 리포트 화면 |
-| NotFound | `*` | (임의의 미등록 경로) | 존재하지 않는 경로 접근 시 표시 |
-
-## 상태
-- `README.md` 추가 완료
+## 라이선스
+Copyright © 2024 INSE AI. All rights reserved.
