@@ -28,19 +28,59 @@ export default function ChatPanel({ logEvent }: ChatPanelProps) {
         setInput('');
         setIsLoading(true);
 
-        // 1. Log the AI Call
-        logEvent('ai_call', {
-            prompt: input,
-            provider: 'mock-ai',
-        });
+        // Determine Taxonomy Event Type
+        let eventType = 'ASK_AI';
+        const hasDebugKeywords = /debug|fix/i.test(input);
 
-        // 2. Simulate AI Response (Mock for MVP)
-        setTimeout(() => {
-            const responseText = `(Mock AI Response) That's a great question about "${input}". Have you considered checking edge cases?`;
-            const aiMsg: Message = { role: 'assistant', content: responseText };
-            setMessages(prev => [...prev, aiMsg]);
+        // 1. Send Request to Back-end
+        const startTime = Date.now();
+        try {
+            const res = await fetch('http://localhost:8000/ai/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    messages: [...messages, userMsg],
+                    model: 'gemini-3-flash-preview'
+                }),
+            });
+
+            if (!res.ok) throw new Error('AI API Error');
+
+            const data = await res.json();
+            const responseText = data.assistant;
+            const latency = Date.now() - startTime;
+
+            // Simple token estimation (4 chars per token)
+            const inToken = Math.ceil(input.length / 4);
+            const outToken = Math.ceil(responseText.length / 4);
+
+            // Heuristic for categorization
+            const isCodeResponse = responseText.includes('```') || /function|const|let|var|return/i.test(responseText);
+
+            if (hasDebugKeywords) {
+                eventType = 'DEBUG_CODE_AI';
+            } else if (isCodeResponse) {
+                eventType = 'GENERATE_CODE_AI';
+            } else {
+                eventType = 'ASK_AI';
+            }
+
+            logEvent(eventType as any, {
+                prompt: input,
+                response: responseText,
+                latency_ms: latency,
+                in_token: inToken,
+                out_token: outToken,
+                provider: 'gemini-3-flash'
+            });
+
+            setMessages(prev => [...prev, { role: 'assistant', content: responseText }]);
+        } catch (error) {
+            console.error(error);
+            setMessages(prev => [...prev, { role: 'assistant', content: 'Error: Failed to connect to AI assistant.' }]);
+        } finally {
             setIsLoading(false);
-        }, 1000);
+        }
     };
 
     return (
@@ -55,8 +95,8 @@ export default function ChatPanel({ logEvent }: ChatPanelProps) {
                 {messages.map((msg, idx) => (
                     <div key={idx} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
                         <div className={`p-2 rounded-lg text-sm max-w-[80%] ${msg.role === 'user'
-                                ? 'bg-blue-600 text-white'
-                                : 'bg-white dark:bg-zinc-800 border dark:border-zinc-700'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-white dark:bg-zinc-800 border dark:border-zinc-700'
                             }`}>
                             {msg.content}
                         </div>

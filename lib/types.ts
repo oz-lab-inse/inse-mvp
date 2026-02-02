@@ -56,11 +56,25 @@ export interface ProjectFile {
   content: string;
 }
 
+export type EventType =
+  | 'CODE_EDIT'
+  | 'TEST_PASS'
+  | 'TEST_FAIL'
+  | 'RUN_SUCCEED'
+  | 'GENERATE_CODE_AI'
+  | 'DEBUG_CODE_AI'
+  | 'ASK_AI'
+  | 'SYNTAX_ERROR'
+  | 'TIME_LENGTH_EXCEEDED'
+  | 'LEAVE_TAB'
+  | 'END_SESSION'
+  | 'TIME_UP';
+
 export interface IdeEvent {
   ide_event_id: string; // UUID
   session_id: string; // FK
   timestamp: string; // datetime (ISO)
-  event_type: string;
+  event_type: EventType;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   payload: any;
 }
