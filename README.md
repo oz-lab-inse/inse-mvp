@@ -85,4 +85,4 @@ pnpm dev
 - `metrics`: 세부 지표 데이터
 
 ## 라이선스
-Copyright © 2024 INSE AI. All rights reserved.
+Copyright © 2026 INSE AI. All rights reserved.
