@@ -39,6 +39,7 @@ if GEMINI_API_KEY:
 # DB Connection
 pool: ConnectionPool | None = None
 
+
 def init_db() -> None:
     global pool
     db_url = os.environ.get("DATABASE_URL") or "postgresql://postgres:saram1nse001@db.xcymbfpvltvntopbxaym.supabase.co:5432/postgres"
@@ -52,11 +53,13 @@ def init_db() -> None:
         print(f"Failed to initialize DB pool: {e}")
         pool = None
 
+
 def close_db() -> None:
     global pool
     if pool is not None:
         pool.close()
         pool = None
+
 
 @contextmanager
 def get_db():
@@ -66,9 +69,11 @@ def get_db():
         with conn.cursor() as cur:
             yield conn, cur
 
+
 # Models & Initial Data
 DEFAULT_CANDIDATE_ID = None
 DEFAULT_TASK_ID = None
+
 
 def ensure_initial_data():
     global DEFAULT_CANDIDATE_ID, DEFAULT_TASK_ID
@@ -135,7 +140,7 @@ def ensure_initial_data():
                 )
                 DEFAULT_CANDIDATE_ID = uid
                 print(f"Created Default Candidate: {uid}")
-            
+
             conn.commit()
             print("Initial data ensure SUCCESS.")
     except Exception as e:
@@ -143,14 +148,17 @@ def ensure_initial_data():
         import traceback
         traceback.print_exc()
 
+
 @app.on_event("startup")
 def _startup():
     init_db()
     ensure_initial_data()
 
+
 @app.on_event("shutdown")
 def _shutdown():
     close_db()
+
 
 # Request/Response Models
 class RunRequest(BaseModel):
@@ -159,7 +167,8 @@ class RunRequest(BaseModel):
     stdin: str = Field("", description="stdin content")
     timeout_ms: int = Field(3000, ge=100, le=30000)
     session_id: str | None = None
-    mode: str = "RUN" # "RUN" or "TEST"
+    mode: str = "RUN"  # "RUN" or "TEST"
+
 
 class RunResponse(BaseModel):
     stdout: str
@@ -167,9 +176,11 @@ class RunResponse(BaseModel):
     exit_code: int
     timed_out: bool
 
+
 class ChatMessage(BaseModel):
     role: str
     content: str
+
 
 class AiChatRequest(BaseModel):
     messages: list[ChatMessage]
@@ -180,11 +191,13 @@ class AiChatRequest(BaseModel):
     in_token: int | None = None
     out_token: int | None = None
 
+
 class AiChatResponse(BaseModel):
     assistant: str
     latency_ms: int = 0
     in_token: int = 0
     out_token: int = 0
+
 
 class EventRequest(BaseModel):
     session_id: str
@@ -192,10 +205,40 @@ class EventRequest(BaseModel):
     payload: dict = {}
     ts: int | None = None
 
+
+# ===== BEGIN ATTITUDE TEST DB API MODIFICATIONS =====
+class AttitudeOptionOut(BaseModel):
+    option_label: str
+    option_text: str
+
+
+class AttitudeQuestionOut(BaseModel):
+    attitude_question_id: str
+    question_type: str
+    question_text: str
+    question_index: int
+    options: list[AttitudeOptionOut] = []
+
+
+class AttitudeTestOut(BaseModel):
+    attitude_test_id: str
+    session_id: str
+    questions: list[AttitudeQuestionOut]
+
+
+class SaveAttitudeAnswerIn(BaseModel):
+    # FREE_RESPONSE -> answer_text
+    answer_text: str | None = None
+    # MULTIPLE_CHOICE -> selected_option_label (A/B/C/D)
+    selected_option_label: str | None = None
+# ===== END ATTITUDE TEST DB API MODIFICATIONS =====
+
+
 # API Endpoints
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
 
 @app.get("/db-health")
 def db_health():
@@ -207,6 +250,7 @@ def db_health():
             return {"db_ok": cur.fetchone()[0] == 1}
     except Exception as e:
         return {"db_ok": False, "error": str(e)}
+
 
 @app.post("/api/sessions")
 def create_session():
@@ -227,10 +271,192 @@ def create_session():
                     conn.commit()
                     print(f"Created session in DB: {session_id}")
                 else:
-                     print(f"Missing Cid({cid}) or Tid({tid})")
+                    print(f"Missing Cid({cid}) or Tid({tid})")
         except Exception as e:
             print(f"Failed to create session in DB: {e}")
     return {"session_id": session_id}
+
+
+# ===== BEGIN ATTITUDE TEST DB API MODIFICATIONS =====
+@app.get("/api/sessions/{session_id}/attitude-test", response_model=AttitudeTestOut)
+def get_attitude_test(session_id: str):
+    """
+    Returns attitude_test + questions + options for a session.
+    If attitude_test does not exist yet, it creates it (FK-safe only if session exists).
+    NOTE: This does NOT auto-create the 7 questions. You populate them via your SQL script.
+    """
+    if pool is None:
+        raise HTTPException(status_code=500, detail="DB not initialized")
+
+    try:
+        with get_db() as (conn, cur):
+            # 1) Ensure session exists
+            cur.execute("SELECT session_id FROM public.sessions WHERE session_id = %s", (session_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            # 2) Ensure attitude_test exists (idempotent)
+            cur.execute(
+                """
+                INSERT INTO public.attitude_tests (session_id)
+                VALUES (%s)
+                ON CONFLICT (session_id) DO NOTHING
+                """,
+                (session_id,),
+            )
+            conn.commit()
+
+            # 3) Fetch attitude_test_id
+            cur.execute(
+                """
+                SELECT attitude_test_id
+                FROM public.attitude_tests
+                WHERE session_id = %s
+                """,
+                (session_id,),
+            )
+            trow = cur.fetchone()
+            if not trow:
+                raise HTTPException(status_code=500, detail="Failed to create/fetch attitude_test")
+            attitude_test_id = str(trow[0])
+
+            # 4) Fetch questions
+            cur.execute(
+                """
+                SELECT attitude_question_id, question_type, question_text, question_index
+                FROM public.attitude_questions
+                WHERE attitude_test_id = %s
+                ORDER BY question_index ASC
+                """,
+                (attitude_test_id,),
+            )
+            qrows = cur.fetchall()
+
+            if not qrows:
+                return AttitudeTestOut(attitude_test_id=attitude_test_id, session_id=session_id, questions=[])
+
+            # 5) Fetch options for those questions (FIX: JOIN instead of ANY(uuid[]))
+            cur.execute(
+                """
+                SELECT o.attitude_question_id, o.option_label, o.option_text
+                FROM public.attitude_options o
+                JOIN public.attitude_questions q
+                  ON q.attitude_question_id = o.attitude_question_id
+                WHERE q.attitude_test_id = %s
+                ORDER BY o.attitude_question_id, o.option_label
+                """,
+                (attitude_test_id,),
+            )
+            orows = cur.fetchall()
+
+            options_by_qid: dict[str, list[AttitudeOptionOut]] = {}
+            for oqid, label, text in orows:
+                k = str(oqid)
+                options_by_qid.setdefault(k, []).append(
+                    AttitudeOptionOut(option_label=str(label), option_text=str(text))
+                )
+
+            out_questions: list[AttitudeQuestionOut] = []
+            for qid, qtype, qtext, qindex in qrows:
+                sqid = str(qid)
+                out_questions.append(
+                    AttitudeQuestionOut(
+                        attitude_question_id=sqid,
+                        question_type=str(qtype),
+                        question_text=str(qtext),
+                        question_index=int(qindex),
+                        options=options_by_qid.get(sqid, []),
+                    )
+                )
+
+            return AttitudeTestOut(
+                attitude_test_id=attitude_test_id,
+                session_id=session_id,
+                questions=out_questions,
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load attitude test: {e}")
+
+@app.post("/api/attitude-questions/{attitude_question_id}/answer")
+def save_attitude_answer(attitude_question_id: str, body: SaveAttitudeAnswerIn):
+    """
+    Saves 1 answer per question into public.attitude_answers (UNIQUE(attitude_question_id)).
+    - FREE_RESPONSE: saves answer_text
+    - MULTIPLE_CHOICE: saves selected_option_label (A/B/C/D) into answer_text (validated against attitude_options)
+    """
+    if pool is None:
+        raise HTTPException(status_code=500, detail="DB not initialized")
+
+    try:
+        with get_db() as (conn, cur):
+            # 1) Get question type
+            cur.execute(
+                """
+                SELECT question_type
+                FROM public.attitude_questions
+                WHERE attitude_question_id = %s
+                """,
+                (attitude_question_id,),
+            )
+            qrow = cur.fetchone()
+            if not qrow:
+                raise HTTPException(status_code=404, detail="Question not found")
+
+            qtype = str(qrow[0])
+
+            # 2) Validate + normalize input
+            if qtype == "FREE_RESPONSE":
+                if body.answer_text is None or not body.answer_text.strip():
+                    raise HTTPException(status_code=400, detail="answer_text is required for FREE_RESPONSE")
+                answer_text = body.answer_text.strip()
+
+            elif qtype == "MULTIPLE_CHOICE":
+                if body.selected_option_label is None or not body.selected_option_label.strip():
+                    raise HTTPException(status_code=400, detail="selected_option_label is required for MULTIPLE_CHOICE")
+
+                label = body.selected_option_label.strip()
+
+                # Validate label exists for this question
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM public.attitude_options
+                    WHERE attitude_question_id = %s AND option_label = %s
+                    """,
+                    (attitude_question_id, label),
+                )
+                if not cur.fetchone():
+                    raise HTTPException(status_code=400, detail="Invalid option_label for this question")
+
+                answer_text = label
+
+            else:
+                raise HTTPException(status_code=400, detail=f"Unsupported question_type: {qtype}")
+
+            # 3) Upsert into attitude_answers
+            cur.execute(
+                """
+                INSERT INTO public.attitude_answers (attitude_question_id, answer_text)
+                VALUES (%s, %s)
+                ON CONFLICT (attitude_question_id)
+                DO UPDATE SET answer_text = EXCLUDED.answer_text
+                """,
+                (attitude_question_id, answer_text),
+            )
+
+            conn.commit()
+            return {"ok": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save attitude answer: {e}")
+# ===== END ATTITUDE TEST DB API MODIFICATIONS =====
+
 
 @app.post("/api/events")
 def log_event_endpoint(body: EventRequest):
@@ -243,10 +469,11 @@ def log_event_endpoint(body: EventRequest):
         generate_report(body.session_id)
     return {"status": "ok", "event_id": evt_id}
 
+
 @app.post("/run", response_model=RunResponse)
 def run_code(body: RunRequest):
     python_exe = os.environ.get("PYTHON_EXECUTABLE") or "python"
-    
+
     if body.session_id:
         insert_ide_event(
             body.session_id,
@@ -289,35 +516,50 @@ if __name__ == "__main__":
 
     with tempfile.TemporaryDirectory() as tmpdir:
         fpath = os.path.join(tmpdir, "main.py")
-        with open(fpath, "w", encoding="utf-8") as f: f.write(code_to_run)
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.write(code_to_run)
         try:
-            proc = subprocess.run([python_exe, fpath], capture_output=True, text=True, timeout=body.timeout_ms/1000.0)
+            proc = subprocess.run(
+                [python_exe, fpath],
+                capture_output=True,
+                text=True,
+                timeout=body.timeout_ms / 1000.0
+            )
             if body.session_id:
                 if is_syntax_error(proc.stderr):
                     insert_ide_event(body.session_id, "SYNTAX_ERROR", {"stderr": proc.stderr})
                 else:
                     insert_ide_event(body.session_id, "RUN_SUCCEED", {"exit_code": proc.returncode})
                 if body.mode.upper() == "TEST":
-                    insert_ide_event(body.session_id, "TEST_PASS" if proc.returncode == 0 else "TEST_FAIL", {"exit_code": proc.returncode})
+                    insert_ide_event(
+                        body.session_id,
+                        "TEST_PASS" if proc.returncode == 0 else "TEST_FAIL",
+                        {"exit_code": proc.returncode}
+                    )
             return RunResponse(stdout=proc.stdout, stderr=proc.stderr, exit_code=proc.returncode, timed_out=False)
         except subprocess.TimeoutExpired:
-            if body.session_id: insert_ide_event(body.session_id, "TIME_LENGTH_EXCEEDED", {"timeout_ms": body.timeout_ms})
+            if body.session_id:
+                insert_ide_event(body.session_id, "TIME_LENGTH_EXCEEDED", {"timeout_ms": body.timeout_ms})
             return RunResponse(stdout="", stderr="Timeout", exit_code=-1, timed_out=True)
+
 
 @app.post("/ai/chat", response_model=AiChatResponse)
 def ai_chat(body: AiChatRequest):
-    if not GEMINI_API_KEY: raise HTTPException(status_code=500, detail="No Gemini Key")
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="No Gemini Key")
     model_name = body.model or os.environ.get("GEMINI_MODEL") or "gemini-3-flash-preview"
-    
+
     start_time = time.time()
     model = genai.GenerativeModel(model_name)
     last_msg = body.messages[-1].content
-    
+
     # Simple classification for taxonomy
     etype = "ASK_AI"
-    if "fix" in last_msg.lower() or "error" in last_msg.lower(): etype = "DEBUG_CODE_AI"
-    elif "write" in last_msg.lower() or "code" in last_msg.lower(): etype = "GENERATE_CODE_AI"
-    
+    if "fix" in last_msg.lower() or "error" in last_msg.lower():
+        etype = "DEBUG_CODE_AI"
+    elif "write" in last_msg.lower() or "code" in last_msg.lower():
+        etype = "GENERATE_CODE_AI"
+
     evt_id = None
     if body.session_id:
         evt_id = insert_ide_event(body.session_id, etype, {"model": model_name})
@@ -326,7 +568,7 @@ def ai_chat(body: AiChatRequest):
         response = model.generate_content(last_msg)
         content = response.text
         latency = int((time.time() - start_time) * 1000)
-        
+
         in_t = getattr(response.usage_metadata, 'prompt_token_count', 0) if hasattr(response, 'usage_metadata') else 0
         out_t = getattr(response.usage_metadata, 'candidates_token_count', 0) if hasattr(response, 'usage_metadata') else 0
 
@@ -340,6 +582,7 @@ def ai_chat(body: AiChatRequest):
         return AiChatResponse(assistant=content, latency_ms=latency, in_token=in_t, out_token=out_t)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
+
 
 # Logic Functions
 def calculate_metrics(events: list):
@@ -364,13 +607,13 @@ def calculate_metrics(events: list):
         elif etype == "CODE_EDIT":
             stats["code_edits"] += 1
             stats["total_added_lines"] += payload.get("added_lines", 0)
-    
+
     # AEQ: Algorithmic Efficiency Quotient (Accuracy Score 0-100)
     aeq = (stats["tests_passed"] / stats["tests_run"] * 100) if stats["tests_run"] > 0 else 0
-    
+
     # IPS: Iterative Problem Solving (Debugging Score 0-100)
     ips = max(0, 100 - (stats["syntax_errors"] * 10))
-    
+
     # EFF: Efficiency (Low AI reliance & concise coding)
     # Higher is better. Let's base it on (1 - AI_reliance)
     total_actions = stats["code_edits"] + stats["ai_calls"]
@@ -379,7 +622,7 @@ def calculate_metrics(events: list):
 
     # Overall Score (Weighted Average)
     overall = (aeq * 0.5) + (ips * 0.3) + (eff * 0.2)
-    
+
     return {
         "overall": round(overall, 2),
         "aeq": round(aeq, 2),
@@ -387,17 +630,20 @@ def calculate_metrics(events: list):
         "eff": round(eff, 2)
     }
 
+
 def generate_report(session_id: str):
-    if pool is None: return
+    if pool is None:
+        return
     try:
         with get_db() as (conn, cur):
             cur.execute("SELECT event_type, payload FROM ide_events WHERE session_id = %s", (session_id,))
             events = cur.fetchall()
-            if not events: return
-            
+            if not events:
+                return
+
             res = calculate_metrics(events)
             rid = str(uuid.uuid4())
-            
+
             # Match schema in image: report_id, session_id, overall_score, aeq, eff, ips
             cur.execute(
                 """
@@ -406,14 +652,14 @@ def generate_report(session_id: str):
                 """,
                 (rid, session_id, res["overall"], res["aeq"], res["eff"], res["ips"])
             )
-            
+
             # Also insert into detailed metrics table
             for name, val in [("AEQ", res["aeq"]), ("IPS", res["ips"]), ("EFF", res["eff"])]:
                 cur.execute(
                     "INSERT INTO metrics (report_id, name, value, completed) VALUES (%s, %s, %s, %s)",
                     (rid, name, val, True)
                 )
-            
+
             conn.commit()
             print(f">>> Report generated for {session_id} | Overall: {res['overall']}")
     except Exception as e:
@@ -421,8 +667,10 @@ def generate_report(session_id: str):
         import traceback
         traceback.print_exc()
 
+
 def insert_ide_event(session_id: str, event_type: str, payload: dict) -> str | None:
-    if pool is None: return None
+    if pool is None:
+        return None
     try:
         with get_db() as (conn, cur):
             cur.execute(
@@ -432,14 +680,97 @@ def insert_ide_event(session_id: str, event_type: str, payload: dict) -> str | N
             eid = cur.fetchone()[0]
             conn.commit()
             return eid
-    except Exception as e: print(f"Insert fail: {e}"); return None
+    except Exception as e:
+        print(f"Insert fail: {e}")
+        return None
+
 
 def count_added_lines(prev: str, curr: str) -> int:
-    if not prev: return len(curr.splitlines())
+    if not prev:
+        return len(curr.splitlines())
     added = 0
     for line in difflib.unified_diff(prev.splitlines(), curr.splitlines()):
-        if line.startswith("+") and not line.startswith("+++"): added += 1
+        if line.startswith("+") and not line.startswith("+++"):
+            added += 1
     return added
+
+@app.get("/api/attitude-tests/{attitude_test_id}", response_model=AttitudeTestOut)
+def get_attitude_test_by_id(attitude_test_id: str):
+    if pool is None:
+        raise HTTPException(status_code=500, detail="DB not initialized")
+
+    try:
+        with get_db() as (_, cur):
+            # 1) Confirm test exists + get session_id
+            cur.execute(
+                """
+                SELECT session_id
+                FROM public.attitude_tests
+                WHERE attitude_test_id = %s
+                """,
+                (attitude_test_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="attitude_test_id not found")
+            session_id = str(row[0])
+
+            # 2) Fetch questions
+            cur.execute(
+                """
+                SELECT attitude_question_id, question_type, question_text, question_index
+                FROM public.attitude_questions
+                WHERE attitude_test_id = %s
+                ORDER BY question_index ASC
+                """,
+                (attitude_test_id,),
+            )
+            qrows = cur.fetchall()
+
+            # 3) Fetch options (JOIN by test_id, safe and avoids ANY(uuid[]) issues)
+            cur.execute(
+                """
+                SELECT o.attitude_question_id, o.option_label, o.option_text
+                FROM public.attitude_options o
+                JOIN public.attitude_questions q
+                  ON q.attitude_question_id = o.attitude_question_id
+                WHERE q.attitude_test_id = %s
+                ORDER BY o.attitude_question_id, o.option_label
+                """,
+                (attitude_test_id,),
+            )
+            orows = cur.fetchall()
+
+            options_by_qid: dict[str, list[AttitudeOptionOut]] = {}
+            for oqid, label, text in orows:
+                k = str(oqid)
+                options_by_qid.setdefault(k, []).append(
+                    AttitudeOptionOut(option_label=str(label), option_text=str(text))
+                )
+
+            out_questions: list[AttitudeQuestionOut] = []
+            for qid, qtype, qtext, qindex in qrows:
+                sqid = str(qid)
+                out_questions.append(
+                    AttitudeQuestionOut(
+                        attitude_question_id=sqid,
+                        question_type=str(qtype),
+                        question_text=str(qtext),
+                        question_index=int(qindex),
+                        options=options_by_qid.get(sqid, []),
+                    )
+                )
+
+            return AttitudeTestOut(
+                attitude_test_id=str(attitude_test_id),
+                session_id=session_id,
+                questions=out_questions,
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load attitude test by id: {e}")
 
 def is_syntax_error(stderr: str) -> bool:
     return "syntaxerror" in (stderr or "").lower()

@@ -13,6 +13,8 @@ import History from "./pages/History";
 import NotFound from "./pages/NotFound";
 import Recruiter from "./pages/Recruiter";
 import CandidateReport from "./pages/CandidateReport";
+import AttitudeTest from "./pages/AttitudeTest";
+
 
 
 const queryClient = new QueryClient();
@@ -30,6 +32,7 @@ const App = () => (
           <Route path="/history" element={<History />} />
           <Route path="/recruiter" element={<Recruiter />} />
           <Route path="/report/:candidateId" element={<CandidateReport />} />
+          <Route path="/AttitudeTest" element={<AttitudeTest />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
